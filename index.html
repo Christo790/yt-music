@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Echo Music Web</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-glass: rgba(255,255,255,0.05);
+            --accent: #7c3aed;
+            --accent-light: #a78bfa;
+            --text-primary: #ffffff;
+            --text-secondary: #9ca3af;
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+        
+        .bg-animation {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: -1; overflow: hidden;
+        }
+        
+        .bg-blob {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(80px);
+            opacity: 0.4;
+            animation: float 20s infinite ease-in-out;
+        }
+        
+        .blob-1 { width: 400px; height: 400px; background: var(--accent); top: -100px; right: -100px; }
+        .blob-2 { width: 300px; height: 300px; background: #ec4899; bottom: -50px; left: -50px; animation-delay: -5s; }
+        
+        @keyframes float {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            33% { transform: translate(30px, -30px) scale(1.1); }
+            66% { transform: translate(-20px, 20px) scale(0.9); }
+        }
+        
+        .app {
+            max-width: 480px;
+            margin: 0 auto;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .header {
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #7c3aed 0%, #ec4899 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .search-container {
+            padding: 0 20px 20px;
+        }
+        
+        .search-box {
+            width: 100%;
+            padding: 15px 20px;
+            border-radius: 30px;
+            border: 1px solid rgba(255,255,255,0.1);
+            background: var(--bg-glass);
+            color: var(--text-primary);
+            font-size: 16px;
+            outline: none;
+            transition: all 0.3s;
+        }
+        
+        .search-box:focus {
+            border-color: var(--accent);
+            background: rgba(124, 58, 237, 0.1);
+        }
+        
+        .search-btn {
+            margin-top: 15px;
+            width: 100%;
+            padding: 15px;
+            border-radius: 30px;
+            border: none;
+            background: linear-gradient(135deg, #7c3aed 0%, #ec4899 100%);
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
+        .search-btn:hover { transform: scale(1.02); }
+        .search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .content {
+            flex: 1;
+            padding: 0 20px 120px;
+            overflow-y: auto;
+        }
+        
+        .section-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 15px;
+        }
+        
+        .song-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .song-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 12px;
+            background: var(--bg-glass);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.05);
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .song-item:hover {
+            background: rgba(255,255,255,0.08);
+            transform: translateX(5px);
+        }
+        
+        .song-item.active {
+            background: rgba(124, 58, 237, 0.3);
+            border-color: rgba(124, 58, 237, 0.6);
+        }
+        
+        .song-art {
+            width: 60px;
+            height: 60px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #7c3aed 0%, #ec4899 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+        
+        .song-art img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        .song-info { flex: 1; min-width: 0; }
+        .song-title {
+            font-size: 15px;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .song-artist {
+            font-size: 13px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .playing-indicator {
+            display: none;
+            gap: 3px;
+            align-items: flex-end;
+            height: 20px;
+            margin-left: 10px;
+        }
+        
+        .song-item.active .playing-indicator { display: flex; }
+        .bar {
+            width: 3px;
+            background: var(--accent-light);
+            border-radius: 2px;
+            animation: equalizer 0.8s infinite ease-in-out;
+        }
+        .bar:nth-child(1) { height: 8px; animation-delay: 0s; }
+        .bar:nth-child(2) { height: 15px; animation-delay: 0.1s; }
+        .bar:nth-child(3) { height: 10px; animation-delay: 0.2s; }
+        
+        @keyframes equalizer {
+            0%, 100% { transform: scaleY(1); }
+            50% { transform: scaleY(0.5); }
+        }
+        
+        /* Mini Player */
+        .mini-player {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            background: rgba(26, 26, 37, 0.98);
+            backdrop-filter: blur(20px);
+            border-radius: 20px;
+            padding: 15px;
+            display: none;
+            align-items: center;
+            gap: 15px;
+            border: 1px solid rgba(255,255,255,0.1);
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+            z-index: 50;
+        }
+        
+        .mini-player.active { display: flex; }
+        
+        .mini-art {
+            width: 50px;
+            height: 50px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #7c3aed 0%, #ec4899 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+        
+        .mini-art img { width: 100%; height: 100%; object-fit: cover; }
+        
+        .mini-info { flex: 1; min-width: 0; }
+        .mini-title {
+            font-size: 14px;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .mini-artist {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        
+        .mini-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .mini-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.1);
+            border: none;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        
+        .mini-btn:hover { background: rgba(255,255,255,0.2); }
+        
+        .progress-bar {
+            position: absolute;
+            bottom: 0;
+            left: 15px;
+            right: 15px;
+            height: 3px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 2px;
+            cursor: pointer;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #7c3aed 0%, #ec4899 100%);
+            border-radius: 2px;
+            width: 0%;
+            transition: width 0.1s;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+        
+        .error {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            color: #fca5a5;
+            padding: 15px;
+            border-radius: 12px;
+            margin: 10px 0;
+            text-align: center;
+        }
+        
+        .backend-status {
+            padding: 10px 20px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #10b981;
+        }
+        
+        .status-dot.error { background: #ef4444; }
+    </style>
+</head>
+<body>
+    <div class="bg-animation">
+        <div class="bg-blob blob-1"></div>
+        <div class="bg-blob blob-2"></div>
+    </div>
+    
+    <div class="app">
+        <div class="header">
+            <div class="logo">Echo Music Web</div>
+        </div>
+        
+        <div class="backend-status" id="backendStatus">
+            <div class="status-dot" id="statusDot"></div>
+            <span id="statusText">Connecting to backend...</span>
+        </div>
+        
+        <div class="search-container">
+            <input type="text" class="search-box" id="searchInput" 
+                   placeholder="Search for songs, artists..." 
+                   onkeypress="if(event.key==='Enter') searchSongs()">
+            <button class="search-btn" id="searchBtn" onclick="searchSongs()">
+                Search
+            </button>
+        </div>
+        
+        <div class="content" id="content">
+            <h2 class="section-title">Trending Now</h2>
+            <div class="song-list" id="songList">
+                <div class="loading">Loading songs...</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Mini Player -->
+    <div class="mini-player" id="miniPlayer">
+        <div class="mini-art" id="miniArt">
+            <img src="" alt="" id="miniArtImg" style="display:none">
+            🎵
+        </div>
+        <div class="mini-info">
+            <div class="mini-title" id="miniTitle">Select a song</div>
+            <div class="mini-artist" id="miniArtist">-</div>
+        </div>
+        <div class="mini-controls">
+            <button class="mini-btn" onclick="togglePlay()">
+                <svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24" id="playIcon">
+                    <path d="M8 5v14l11-7z"/>
+                </svg>
+            </button>
+        </div>
+        <div class="progress-bar" onclick="seek(event)">
+            <div class="progress-fill" id="progressFill"></div>
+        </div>
+    </div>
+    
+    <audio id="audioPlayer" preload="metadata"></audio>
+    
+    <script>
+        const API_URL = 'http://localhost:5000';
+        let currentSongId = null;
+        let isPlaying = false;
+        let audio = document.getElementById('audioPlayer');
+        let currentSongs = []; // Store songs for reference
+        
+        // Check backend status
+        async function checkBackend() {
+            try {
+                const response = await fetch(`${API_URL}/`, { method: 'GET' });
+                if (response.ok) {
+                    document.getElementById('statusText').textContent = 'Backend connected';
+                    document.getElementById('statusDot').classList.remove('error');
+                    loadTrending();
+                }
+            } catch (e) {
+                document.getElementById('statusText').textContent = 'Backend offline - Start server.py';
+                document.getElementById('statusDot').classList.add('error');
+                showError('Backend not running. Please start server.py first.');
+            }
+        }
+        
+        // Load trending songs
+        async function loadTrending() {
+            try {
+                const response = await fetch(`${API_URL}/trending`);
+                const songs = await response.json();
+                currentSongs = songs;
+                renderSongs(songs);
+            } catch (e) {
+                showError('Failed to load trending songs');
+            }
+        }
+        
+        // Search songs
+        async function searchSongs() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (!query) return;
+            
+            const btn = document.getElementById('searchBtn');
+            btn.disabled = true;
+            btn.textContent = 'Searching...';
+            
+            try {
+                const response = await fetch(`${API_URL}/search?q=${encodeURIComponent(query)}`);
+                const songs = await response.json();
+                currentSongs = songs;
+                renderSongs(songs);
+                document.querySelector('.section-title').textContent = `Search: "${query}"`;
+            } catch (e) {
+                showError('Search failed');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Search';
+            }
+        }
+        
+        // Render song list
+        function renderSongs(songs) {
+            const list = document.getElementById('songList');
+            
+            if (songs.length === 0) {
+                list.innerHTML = '<div class="loading">No songs found</div>';
+                return;
+            }
+            
+            list.innerHTML = songs.map((song, index) => `
+                <div class="song-item" data-id="${song.id}" data-index="${index}">
+                    <div class="song-art">
+                        ${song.thumbnail ? `<img src="${song.thumbnail}" alt="" loading="lazy">` : '🎵'}
+                    </div>
+                    <div class="song-info">
+                        <div class="song-title">${escapeHtml(song.title)}</div>
+                        <div class="song-artist">${escapeHtml(song.artist)}${song.duration ? ' • ' + song.duration : ''}</div>
+                    </div>
+                    <div class="playing-indicator">
+                        <div class="bar"></div>
+                        <div class="bar"></div>
+                        <div class="bar"></div>
+                    </div>
+                </div>
+            `).join('');
+            
+            // Add click listeners after rendering
+            document.querySelectorAll('.song-item').forEach(item => {
+                item.addEventListener('click', function() {
+                    const index = this.getAttribute('data-index');
+                    const song = currentSongs[index];
+                    playSong(song, this);
+                });
+            });
+        }
+        
+        // Escape HTML
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // Play a song
+        async function playSong(song, element) {
+            console.log('Playing song:', song);
+            
+            // Update active state in UI
+            document.querySelectorAll('.song-item').forEach(el => el.classList.remove('active'));
+            element.classList.add('active');
+            
+            // Update mini player
+            document.getElementById('miniTitle').textContent = song.title;
+            document.getElementById('miniArtist').textContent = song.artist;
+            
+            if (song.thumbnail) {
+                document.getElementById('miniArtImg').src = song.thumbnail;
+                document.getElementById('miniArtImg').style.display = 'block';
+            }
+            
+            document.getElementById('miniPlayer').classList.add('active');
+            
+            // Stop current playback
+            audio.pause();
+            audio.src = '';
+            
+            // Get stream URL from backend
+            try {
+                console.log(`Fetching: ${API_URL}/song/${song.id}`);
+                const response = await fetch(`${API_URL}/song/${song.id}`);
+                const data = await response.json();
+                
+                console.log('Song data:', data);
+                
+                if (data.stream_url) {
+                    currentSongId = song.id;
+                    audio.src = `${API_URL}${data.stream_url}`;
+                    audio.play().then(() => {
+                        isPlaying = true;
+                        updatePlayButton();
+                        console.log('Playback started');
+                    }).catch(err => {
+                        console.error('Playback error:', err);
+                        showError('Failed to play: ' + err.message);
+                    });
+                } else {
+                    console.error('No stream URL in response');
+                    showError('Stream not available for this song');
+                }
+            } catch (e) {
+                console.error('Failed to load song:', e);
+                showError('Failed to load song: ' + e.message);
+            }
+        }
+        
+        // Toggle play/pause
+        function togglePlay() {
+            if (!audio.src) {
+                console.log('No audio source');
+                return;
+            }
+            
+            if (isPlaying) {
+                audio.pause();
+                isPlaying = false;
+            } else {
+                audio.play().then(() => {
+                    isPlaying = true;
+                }).catch(err => {
+                    console.error('Play error:', err);
+                });
+            }
+            updatePlayButton();
+        }
+        
+        // Update play button icon
+        function updatePlayButton() {
+            const icon = document.getElementById('playIcon');
+            if (isPlaying) {
+                icon.innerHTML = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>';
+            } else {
+                icon.innerHTML = '<path d="M8 5v14l11-7z"/>';
+            }
+        }
+        
+        // Update progress bar
+        audio.addEventListener('timeupdate', () => {
+            if (audio.duration) {
+                const percent = (audio.currentTime / audio.duration) * 100;
+                document.getElementById('progressFill').style.width = percent + '%';
+            }
+        });
+        
+        // Handle audio ended
+        audio.addEventListener('ended', () => {
+            isPlaying = false;
+            updatePlayButton();
+        });
+        
+        // Handle audio error
+        audio.addEventListener('error', (e) => {
+            console.error('Audio error:', e);
+            isPlaying = false;
+            updatePlayButton();
+        });
+        
+        // Seek
+        function seek(event) {
+            if (!audio.duration) return;
+            const bar = event.currentTarget;
+            const percent = event.offsetX / bar.offsetWidth;
+            audio.currentTime = percent * audio.duration;
+        }
+        
+        // Show error
+        function showError(msg) {
+            const list = document.getElementById('songList');
+            list.innerHTML = `<div class="error">${msg}</div>`;
+        }
+        
+        // Initialize
+        checkBackend();
+    </script>
+</body>
+</html>
