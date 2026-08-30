@@ -1,13 +1,16 @@
 {
-  "name": "my-app",
+  "name": "echo-music",
   "version": "1.0.0",
-  "description": "App configured for Netrun deployment",
+  "description": "Echo Music Web App",
   "main": "server.js",
   "scripts": {
     "preinstall": "export YOUTUBE_DL_SKIP_PYTHON_CHECK=1",
     "start": "node server.js"
   },
   "dependencies": {
+    "express": "^4.21.2",
+    "cors": "^2.8.5",
+    "axios": "^1.7.9",
     "youtube-dl-exec": "^3.0.0"
   }
 }
