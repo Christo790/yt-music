@@ -1,389 +1,535 @@
-// Echo Music Web Backend
-const express = require('express');
-const cors = require('cors');
-const youtubedl = require('youtube-dl-exec');
-const axios = require('axios');
-const path = require('path');
-const { execFile } = require('child_process');
-const fs = require('fs');
+const express = require("express");
+const cors = require("cors");
+const axios = require("axios");
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
+// Render provides PORT automatically.
+// 5000 is used when running locally.
 const PORT = process.env.PORT || 5000;
 
-// YouTube Music API using Innertube (no auth needed for search)
-const YTM_BASE = 'https://music.youtube.com/youtubei/v1';
-const YTM_KEY = 'AIzaSyC9XL3ZjWYYXSDmUBcaYWDcZYF-GUuQsKY';
-const YTM_CLIENT = {
-    clientName: 'WEB_REMIX',
-    clientVersion: '1.20231204.01.00',
-    hl: 'en',
-    gl: 'US'
+const YT_API = "https://music.youtube.com/youtubei/v1";
+const CLIENT_VERSION = "1.20260827.01.00";
+
+const HEADERS = {
+  "Content-Type": "application/json",
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+  Origin: "https://music.youtube.com",
+  Referer: "https://music.youtube.com/",
 };
 
-async function ytmRequest(endpoint, body = {}) {
-    const url = `${YTM_BASE}/${endpoint}?key=${YTM_KEY}&prettyPrint=false`;
-    const payload = {
-        context: { client: YTM_CLIENT },
-        ...body
-    };
-    
-    const response = await axios.post(url, payload, {
-        headers: {
-            'Content-Type': 'application/json',
-            'Origin': 'https://music.youtube.com',
-            'Referer': 'https://music.youtube.com/',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.0'
-        }
-    });
-    return response.data;
-}
+// --------------------------------------------------
+// YouTube Music request helper
+// --------------------------------------------------
 
-function getSectionList(data) {
-    const contents = data?.contents;
-    const tabs = contents?.tabbedSearchResultsRenderer?.tabs;
-    return tabs?.[0]?.tabRenderer?.content?.sectionListRenderer?.contents 
-        || contents?.sectionListRenderer?.contents 
-        || [];
-}
-
-function parseSongs(sectionList) {
-    const songs = [];
-    if (!sectionList || !Array.isArray(sectionList)) return songs;
-    
-    for (const section of sectionList) {
-        const shelf = section.musicShelfRenderer || section.musicCardShelfRenderer;
-        if (!shelf || !shelf.contents) continue;
-        
-        for (const item of shelf.contents) {
-            const renderer = item.musicResponsiveListItemRenderer;
-            if (!renderer) continue;
-            
-            const videoId = renderer.playlistItemData?.videoId || 
-                           renderer.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId ||
-                           renderer.doubleTapCommand?.watchEndpoint?.videoId;
-            
-            if (!videoId) continue;
-            
-            const flexColumns = renderer.flexColumns || [];
-            const title = flexColumns[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.[0]?.text || 'Unknown Title';
-            
-            const col1Runs = flexColumns[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs || [];
-            const artist = col1Runs[0]?.text || 'Unknown Artist';
-            const duration = col1Runs.length > 1 ? col1Runs[col1Runs.length - 1]?.text || '0:00' : '0:00';
-            
-            const thumbs = renderer.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails || [];
-            const thumbnail = thumbs[thumbs.length - 1]?.url || '';
-            
-            songs.push({
-                id: videoId,
-                title: title,
-                artist: artist,
-                thumbnail: thumbnail,
-                duration: duration
-            });
-        }
+async function ytRequest(endpoint, body) {
+  const response = await axios.post(
+    `${YT_API}/${endpoint}?key=AIzaSyAO_F7bF5gZ1yJ4u7pQ8qT0JmJ3eYxNq2I`,
+    {
+      context: {
+        client: {
+          clientName: "WEB_REMIX",
+          clientVersion: CLIENT_VERSION,
+          hl: "en",
+          gl: "US",
+        },
+      },
+      ...body,
+    },
+    {
+      headers: HEADERS,
+      timeout: 20000,
     }
-    
-    return songs;
+  );
+
+  return response.data;
 }
 
-const audioUrlCache = new Map(); // videoId -> { url, timestamp }
-const pendingAudioUrlPromises = new Map(); // videoId -> Promise<string>
+// --------------------------------------------------
+// Helpers
+// --------------------------------------------------
 
-// Get audio URL using yt-dlp via direct execFile to handle spaces in folder path
-async function getAudioUrl(videoId) {
-    const cached = audioUrlCache.get(videoId);
-    const now = Date.now();
-    // Cache valid for 30 minutes
-    if (cached && (now - cached.timestamp < 30 * 60 * 1000)) {
-        console.log(`[Cache Hit] Audio URL for ${videoId}`);
-        return cached.url;
-    }
-    
-    // Deduplicate in-flight requests for the same videoId
-    if (pendingAudioUrlPromises.has(videoId)) {
-        console.log(`[In-Flight Reuse] Waiting on pending yt-dlp for ${videoId}`);
-        return pendingAudioUrlPromises.get(videoId);
-    }
-
-    const promise = new Promise((resolve) => {
-        let binaryPath = path.join(__dirname, 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp.exe');
-        if (!fs.existsSync(binaryPath)) {
-            binaryPath = path.join(__dirname, 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
-        }
-        
-        const url = `https://www.youtube.com/watch?v=${videoId}`;
-        const args = [
-            url,
-            '-j',
-            '--no-warnings',
-            '--no-call-home',
-            '-f', 'bestaudio/best',
-            '--referer', 'https://music.youtube.com/'
-        ];
-        
-        execFile(binaryPath, args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
-            pendingAudioUrlPromises.delete(videoId);
-            if (err) {
-                console.error('yt-dlp execFile error:', err.message);
-                return resolve(null);
-            }
-            try {
-                const data = JSON.parse(stdout);
-                let streamUrl = data.url;
-                if (!streamUrl && data.formats) {
-                    const audioFormats = data.formats.filter(f => f.acodec !== 'none' && f.vcodec === 'none');
-                    if (audioFormats.length > 0) {
-                        audioFormats.sort((a, b) => (b.abr || 0) - (a.abr || 0));
-                        streamUrl = audioFormats[0].url;
-                    } else {
-                        for (const fmt of data.formats) {
-                            if (fmt.url) {
-                                streamUrl = fmt.url;
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (streamUrl) {
-                    audioUrlCache.set(videoId, { url: streamUrl, timestamp: Date.now() });
-                }
-                resolve(streamUrl || null);
-            } catch (e) {
-                console.error('yt-dlp JSON parse error:', e.message);
-                resolve(null);
-            }
-        });
-    });
-
-    pendingAudioUrlPromises.set(videoId, promise);
-    return promise;
+function getVideoId(item) {
+  return (
+    item?.videoId ||
+    item?.navigationEndpoint?.watchEndpoint?.videoId ||
+    item?.playbackEndpoint?.watchEndpoint?.videoId ||
+    null
+  );
 }
 
-// Routes
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+function cleanText(value) {
+  if (!value) return "";
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (value.simpleText) {
+    return value.simpleText;
+  }
+
+  if (Array.isArray(value.runs)) {
+    return value.runs.map((run) => run.text || "").join("");
+  }
+
+  return "";
+}
+
+function getRunsText(value) {
+  return cleanText(value);
+}
+
+function getArtists(item) {
+  const artists =
+    item?.artists ||
+    item?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer
+      ?.text?.runs ||
+    [];
+
+  if (Array.isArray(artists)) {
+    return artists
+      .map((artist) => artist.text)
+      .filter(Boolean)
+      .join(", ");
+  }
+
+  return cleanText(artists);
+}
+
+function parseSearchItem(item) {
+  const renderer =
+    item?.musicResponsiveListItemRenderer ||
+    item?.musicTwoRowItemRenderer ||
+    item;
+
+  if (!renderer) return null;
+
+  const videoId = getVideoId(renderer);
+
+  if (!videoId) return null;
+
+  const flexColumns = renderer.flexColumns || [];
+
+  let title = "";
+  let artist = "";
+  let album = "";
+  let duration = "";
+
+  // Newer Music Responsive List Item format
+  if (flexColumns.length) {
+    title = cleanText(
+      flexColumns[0]
+        ?.musicResponsiveListItemFlexColumnRenderer
+        ?.text
+    );
+
+    const secondText = cleanText(
+      flexColumns[1]
+        ?.musicResponsiveListItemFlexColumnRenderer
+        ?.text
+    );
+
+    if (secondText) {
+      artist = secondText.split(" • ")[0] || "";
+      album = secondText.split(" • ")[1] || "";
+    }
+  }
+
+  // Older / alternate format
+  if (!title) {
+    title =
+      cleanText(renderer.title) ||
+      cleanText(renderer.titleText) ||
+      "";
+  }
+
+  if (!artist) {
+    artist =
+      cleanText(renderer.artist) ||
+      cleanText(renderer.subtitle) ||
+      "";
+  }
+
+  if (!album) {
+    album = cleanText(renderer.album) || "";
+  }
+
+  duration =
+    cleanText(renderer.lengthText) ||
+    cleanText(renderer.duration) ||
+    "";
+
+  // Thumbnail
+  let thumbnail = "";
+
+  const thumbnails =
+    renderer.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails ||
+    renderer.thumbnail?.thumbnails ||
+    renderer.thumbnails ||
+    [];
+
+  if (Array.isArray(thumbnails) && thumbnails.length) {
+    thumbnail = thumbnails[thumbnails.length - 1]?.url || "";
+  }
+
+  if (!thumbnail) {
+    thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+  }
+
+  return {
+    videoId,
+    title: title || "Unknown",
+    artist: artist || "Unknown Artist",
+    album: album || "",
+    duration: duration || "",
+    thumbnail,
+  };
+}
+
+// --------------------------------------------------
+// Health check
+// --------------------------------------------------
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    service: "Echo Music Web Backend",
+    playback: "YouTube Embed",
+  });
 });
 
-app.get('/api/status', (req, res) => {
-    res.json({ status: "Echo Music Backend Running (Node.js)", version: "2.0" });
-});
+// --------------------------------------------------
+// Search
+// --------------------------------------------------
 
-app.get('/search', async (req, res) => {
-    const query = req.query.q;
+app.get("/search", async (req, res) => {
+  try {
+    const query = String(req.query.q || "").trim();
+
     if (!query) {
-        return res.status(400).json({ error: "No query provided" });
+      return res.status(400).json({
+        error: "Missing search query",
+      });
     }
-    
-    try {
-        const data = await ytmRequest('search', {
-            query: query,
-            params: 'EgWKAQIIAWoQEAMQBBAFEAkQChAEEAAYACgB' // Songs filter
-        });
-        
-        const sectionList = getSectionList(data);
-        const songs = parseSongs(sectionList);
-        
-        // Pre-cache stream URL for top 3 songs in background
-        songs.slice(0, 3).forEach(s => {
-            getAudioUrl(s.id).catch(() => {});
-        });
 
-        res.json(songs);
-    } catch (error) {
-        console.error('Search error:', error.message);
-        res.status(500).json({ error: error.message });
+    console.log(`Searching for: ${query}`);
+
+    const data = await ytRequest("search", {
+      query,
+      params: "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D",
+    });
+
+    const contents =
+      data?.contents
+        ?.tabbedSearchResultsRenderer
+        ?.tabs?.[0]
+        ?.tabRenderer
+        ?.content
+        ?.sectionListRenderer
+        ?.contents || [];
+
+    const results = [];
+
+    for (const section of contents) {
+      const items =
+        section?.musicShelfRenderer?.contents ||
+        section?.musicPlaylistShelfRenderer?.contents ||
+        [];
+
+      for (const item of items) {
+        const parsed = parseSearchItem(item);
+
+        if (parsed) {
+          results.push(parsed);
+        }
+      }
     }
+
+    // Fallback recursive extraction for different response formats.
+    if (results.length === 0) {
+      function walk(obj) {
+        if (!obj || typeof obj !== "object") return;
+
+        if (Array.isArray(obj)) {
+          for (const child of obj) {
+            walk(child);
+
+            if (results.length >= 25) return;
+          }
+
+          return;
+        }
+
+        if (
+          obj.musicResponsiveListItemRenderer ||
+          obj.musicTwoRowItemRenderer
+        ) {
+          const parsed = parseSearchItem(obj);
+
+          if (parsed) {
+            results.push(parsed);
+          }
+        }
+
+        if (results.length >= 25) return;
+
+        for (const key of Object.keys(obj)) {
+          walk(obj[key]);
+
+          if (results.length >= 25) return;
+        }
+      }
+
+      walk(data);
+    }
+
+    const unique = [];
+    const seen = new Set();
+
+    for (const item of results) {
+      if (!seen.has(item.videoId)) {
+        seen.add(item.videoId);
+        unique.push(item);
+      }
+
+      if (unique.length >= 25) break;
+    }
+
+    console.log(`Found ${unique.length} results`);
+
+    res.json(unique);
+  } catch (error) {
+    console.error("Search error:", error.message);
+
+    res.status(500).json({
+      error: "Search failed",
+      details: error.message,
+    });
+  }
 });
 
-app.get('/trending', async (req, res) => {
-    try {
-        // Search for popular music
-        const data = await ytmRequest('search', {
-            query: 'popular music trending',
-            params: 'EgWKAQIIAWoQEAMQBBAFEAkQChAEEAAYACgB'
-        });
-        
-        const sectionList = getSectionList(data);
-        const songs = parseSongs(sectionList);
-        
-        // Pre-cache stream URL for top 3 songs in background
-        songs.slice(0, 3).forEach(s => {
-            getAudioUrl(s.id).catch(() => {});
-        });
+// --------------------------------------------------
+// Trending / Home
+// --------------------------------------------------
 
-        res.json(songs);
-    } catch (error) {
-        console.error('Trending error:', error.message);
-        res.status(500).json({ error: error.message });
+app.get("/trending", async (req, res) => {
+  try {
+    console.log("Getting trending music...");
+
+    const data = await ytRequest("browse", {
+      browseId: "FEmusic_home",
+    });
+
+    const results = [];
+
+    function walk(obj) {
+      if (!obj || typeof obj !== "object") return;
+
+      if (Array.isArray(obj)) {
+        for (const child of obj) {
+          walk(child);
+
+          if (results.length >= 30) return;
+        }
+
+        return;
+      }
+
+      if (
+        obj.musicTwoRowItemRenderer ||
+        obj.musicResponsiveListItemRenderer
+      ) {
+        const parsed = parseSearchItem(obj);
+
+        if (parsed) {
+          results.push(parsed);
+        }
+      }
+
+      if (results.length >= 30) return;
+
+      for (const key of Object.keys(obj)) {
+        walk(obj[key]);
+
+        if (results.length >= 30) return;
+      }
     }
+
+    walk(data);
+
+    const unique = [];
+    const seen = new Set();
+
+    for (const item of results) {
+      if (!seen.has(item.videoId)) {
+        seen.add(item.videoId);
+        unique.push(item);
+      }
+
+      if (unique.length >= 30) break;
+    }
+
+    res.json(unique);
+  } catch (error) {
+    console.error("Trending error:", error.message);
+
+    res.status(500).json({
+      error: "Could not get trending music",
+      details: error.message,
+    });
+  }
 });
 
-app.get('/song/:songId', async (req, res) => {
-    const { songId } = req.params;
-    console.log(`\n${'='.repeat(50)}`);
-    console.log(`Getting song: ${songId}`);
-    
-    try {
-        // Get video details
-        const data = await ytmRequest('player', {
-            videoId: songId,
-            racyCheckOk: true,
-            contentCheckOk: true
-        });
-        
-        const details = data.videoDetails;
-        const title = details?.title || 'Unknown';
-        const author = details?.author || 'Unknown';
-        const thumbnails = details?.thumbnail?.thumbnails || [];
-        const thumbnail = thumbnails[thumbnails.length - 1]?.url || '';
-        const duration = parseInt(details?.lengthSeconds || 0);
-        
-        console.log(`Title: ${title}`);
-        console.log(`Artist: ${author}`);
-        console.log('Getting stream URL with yt-dlp...');
-        
-        const streamUrl = await getAudioUrl(songId);
-        
-        if (streamUrl) {
-            console.log(`SUCCESS: Got stream URL`);
-            console.log(`URL preview: ${streamUrl.substring(0, 60)}...`);
-        } else {
-            console.log('FAILED: Could not get stream URL');
-        }
-        
-        const responseData = {
-            id: songId,
-            title: title,
-            artist: author,
-            stream_url: streamUrl ? `/stream/${songId}` : null,
-            thumbnail: thumbnail,
-            duration_seconds: duration
-        };
-        
-        console.log(`${'='.repeat(50)}\n`);
-        res.json(responseData);
-        
-    } catch (error) {
-        console.error('ERROR in get_song:', error.message);
-        res.status(500).json({ error: error.message });
+// --------------------------------------------------
+// Song metadata
+// --------------------------------------------------
+
+app.get("/song/:id", async (req, res) => {
+  try {
+    const videoId = req.params.id;
+
+    if (!videoId) {
+      return res.status(400).json({
+        error: "Missing video ID",
+      });
     }
+
+    console.log(`Getting song: ${videoId}`);
+
+    const data = await ytRequest("player", {
+      videoId,
+      params: "CgIQBg==",
+    });
+
+    const details = data?.videoDetails || {};
+
+    const title = details.title || "Unknown";
+    const artist = details.author || "Unknown Artist";
+
+    let thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+    if (
+      data?.videoDetails?.thumbnail?.thumbnails &&
+      data.videoDetails.thumbnail.thumbnails.length
+    ) {
+      const thumbnails = data.videoDetails.thumbnail.thumbnails;
+
+      thumbnail = thumbnails[thumbnails.length - 1].url;
+    }
+
+    res.json({
+      videoId,
+      title,
+      artist,
+      thumbnail,
+      duration: details.lengthSeconds || "",
+      channelId: details.channelId || "",
+      description: details.shortDescription || "",
+    });
+  } catch (error) {
+    console.error("Song metadata error:", error.message);
+
+    res.status(500).json({
+      error: "Could not get song information",
+      details: error.message,
+    });
+  }
 });
 
-app.get('/stream/:songId', async (req, res) => {
-    const { songId } = req.params;
-    
-    // Log rich terminal output for song play request
-    console.log(`\n${'='.repeat(50)}`);
-    console.log(`Getting song: ${songId}`);
-    
-    try {
-        let title = 'Unknown', author = 'Unknown';
-        try {
-            const playerDetails = await ytmRequest('player', { videoId: songId, racyCheckOk: true, contentCheckOk: true });
-            title = playerDetails?.videoDetails?.title || 'Unknown';
-            author = playerDetails?.videoDetails?.author || 'Unknown';
-        } catch (e) {}
-        
-        console.log(`Title: ${title}`);
-        console.log(`Artist: ${author}`);
-        console.log('Getting stream URL with yt-dlp...');
-        
-        const streamUrl = await getAudioUrl(songId);
-        
-        if (streamUrl) {
-            console.log(`SUCCESS: Got stream URL`);
-            console.log(`URL preview: ${streamUrl.substring(0, 60)}...`);
-        } else {
-            console.log('FAILED: Could not get stream URL');
-            console.log(`${'='.repeat(50)}\n`);
-            return res.status(404).json({ error: 'Stream not available' });
-        }
-        console.log(`${'='.repeat(50)}\n`);
+// --------------------------------------------------
+// YouTube Embed information
+// --------------------------------------------------
+//
+// The frontend uses this endpoint to obtain the video ID.
+// Playback is handled by YouTube's official embedded player.
+// No audio URL extraction happens here.
+// --------------------------------------------------
 
-        console.log(`Streaming request for: ${songId}`);
-        console.log(`Proxying stream from: ${streamUrl.substring(0, 60)}...`);
-        
-        const rangeHeader = req.headers.range;
-        const headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': '*/*',
-            'Accept-Encoding': 'identity',
-            'Referer': 'https://music.youtube.com/'
-        };
-        
-        if (rangeHeader) {
-            headers['Range'] = rangeHeader;
-            console.log(`Range request: ${rangeHeader}`);
-        }
-        
-        const response = await axios({
-            method: 'get',
-            url: streamUrl,
-            headers: headers,
-            responseType: 'stream',
-            timeout: 30000
-        });
-        
-        console.log(`YouTube response status: ${response.status}`);
-        console.log(`Content-Type: ${response.headers['content-type']}`);
-        
-        const responseHeaders = {
-            'Content-Type': response.headers['content-type'] || 'audio/webm',
-            'Accept-Ranges': 'bytes'
-        };
-        
-        if (response.headers['content-length']) {
-            responseHeaders['Content-Length'] = response.headers['content-length'];
-        }
-        if (response.headers['content-range']) {
-            responseHeaders['Content-Range'] = response.headers['content-range'];
-        }
-        
-        res.status(response.status);
-        Object.entries(responseHeaders).forEach(([key, value]) => {
-            res.setHeader(key, value);
-        });
-        
-        response.data.pipe(res);
-        
-    } catch (error) {
-        console.error('Streaming error:', error.message);
-        res.status(500).json({ error: error.message });
-    }
+app.get("/api/video/:id", (req, res) => {
+  const videoId = req.params.id;
+
+  if (!videoId) {
+    return res.status(400).json({
+      error: "Missing video ID",
+    });
+  }
+
+  res.json({
+    videoId,
+    embedUrl: `https://www.youtube.com/embed/${encodeURIComponent(
+      videoId
+    )}?autoplay=1&rel=0`,
+  });
 });
 
-app.get('/lyrics/:songId', async (req, res) => {
-    const { songId } = req.params;
-    
-    try {
-        // Try to get lyrics from browse endpoint
-        const browseData = await ytmRequest('browse', {
-            browseId: `MPLYt_${songId}`,
-            params: 'ggMIegJADwodd2F0Y2gtbXVzaWMtbHlyaWNzMgYQ2pYBCBI%3D'
-        });
-        
-        // Parse lyrics from response (simplified)
-        const lyrics = browseData.contents?.sectionListRenderer?.contents?.[0]?.musicDescriptionShelfRenderer?.description?.runs?.[0]?.text;
-        
-        res.json({ lyrics: lyrics || 'Lyrics not available' });
-    } catch (error) {
-        res.json({ lyrics: 'Lyrics not available' });
+// --------------------------------------------------
+// Lyrics
+// --------------------------------------------------
+
+app.get("/lyrics/:id", async (req, res) => {
+  try {
+    const videoId = req.params.id;
+
+    if (!videoId) {
+      return res.status(400).json({
+        error: "Missing video ID",
+      });
     }
+
+    // Lyrics are not extracted through yt-dlp.
+    // Return a clean response when lyrics aren't available.
+    res.json({
+      videoId,
+      lyrics: "",
+      available: false,
+      message: "Lyrics are not available from this backend.",
+    });
+  } catch (error) {
+    console.error("Lyrics error:", error.message);
+
+    res.status(500).json({
+      error: "Could not get lyrics",
+      details: error.message,
+    });
+  }
 });
 
-// Serve static files (your HTML frontend)
-app.use(express.static(path.join(__dirname, '.')));
+// --------------------------------------------------
+// Serve frontend
+// --------------------------------------------------
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log('='.repeat(60));
-    console.log('Echo Music Web Backend (Node.js)');
-    console.log('='.repeat(60));
-    console.log('\nInstall required packages:');
-    console.log('  npm install express cors youtube-dl-exec axios');
-    console.log(`\nStarting server on http://localhost:${PORT}`);
-    console.log('='.repeat(60));
+app.get("/", (req, res) => {
+  res.sendFile(__dirname + "/index.html");
+});
+
+// --------------------------------------------------
+// 404 handler
+// --------------------------------------------------
+
+app.use((req, res) => {
+  res.status(404).json({
+    error: "Not found",
+  });
+});
+
+// --------------------------------------------------
+// Start server
+// --------------------------------------------------
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("============================================================");
+  console.log("Echo Music Web Backend (Node.js)");
+  console.log("============================================================");
+  console.log("");
+  console.log("Playback: YouTube Embedded Player");
+  console.log("yt-dlp: DISABLED");
+  console.log("");
+  console.log(`Server listening on port ${PORT}`);
+  console.log("============================================================");
 });
