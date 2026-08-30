@@ -1,0 +1,13 @@
+{
+  "name": "my-app",
+  "version": "1.0.0",
+  "description": "App configured for Netrun deployment",
+  "main": "server.js",
+  "scripts": {
+    "preinstall": "export YOUTUBE_DL_SKIP_PYTHON_CHECK=1",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "youtube-dl-exec": "^3.0.0"
+  }
+}
